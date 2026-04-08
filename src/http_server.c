@@ -1,12 +1,29 @@
+/*
+ * http_server.c — tiny HTTP server on top of lwIP raw TCP API
+ *
+ * Why not “real” sockets (POSIX)?
+ *  On this Pico SDK build, lwIP runs with NO_SYS=1: no RTOS, no blocking socket thread.
+ *  TCP is callback-driven: lwIP calls http_accept when a client connects, http_recv when data arrives.
+ *  cyw43_arch_poll() (in main) drives the stack forward.
+ *
+ * Why critical_section for RGB?
+ *  http_recv runs in the context of lwIP during cyw43_arch_poll(); the main loop reads color when
+ *  drawing. Without a lock, you could read half-updated bytes (torn read). critical_section_* disables
+ *  interrupts briefly on the one core — enough for three uint8_t (not a full mutex, but correct here).
+ *
+ * cyw43_arch_lwip_begin/end around tcp_bind/listen:
+ *  SDK wrapper to keep lwIP internal state consistent when calling from “outside” lwIP callbacks.
+ */
+
 #include "http_server.h"
 
 #include "config.h"
 #include "pico/cyw43_arch.h"
 #include "pico/sync.h"
 
-#include "lwip/ip.h"
-#include "lwip/pbuf.h"
-#include "lwip/tcp.h"
+#include "lwip/ip.h"    /* IP4_ADDR, ip_addr_t */
+#include "lwip/pbuf.h"  /* pbuf chain — TCP payload may be split across buffers */
+#include "lwip/tcp.h"   /* tcp_pcb, tcp_listen, callbacks */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +34,7 @@ static uint8_t color_r = 32;
 static uint8_t color_g = 0;
 static uint8_t color_b = 128;
 
+/* Listening PCB stays allocated for the lifetime of the firmware (we never close the listener). */
 static struct tcp_pcb *listen_pcb;
 
 void http_get_color(uint8_t *r, uint8_t *g, uint8_t *b) {
@@ -35,6 +53,7 @@ static void set_color(uint8_t r, uint8_t g, uint8_t b) {
     critical_section_exit(&color_lock);
 }
 
+/* HTTP request line ends at \r or \n; we only need the first line to route GET /color vs /status. */
 static void copy_first_line(const char *buf, size_t len, char *out, size_t outsz) {
     size_t i = 0;
     while (i < len && i + 1 < outsz) {
@@ -45,14 +64,20 @@ static void copy_first_line(const char *buf, size_t len, char *out, size_t outsz
         out[i] = c;
         i++;
     }
-    out[i] = '\0';
+    out[i] = '\0'; /* C strings end with NUL — strlen/printf stop here */
 }
 
+/*
+ * Very small query parser: find ?r=12&g=… in the request line.
+ * strstr searches for substrings; strtoul converts ASCII digits to unsigned long (base 10).
+ * We clamp to 0–255 for LED PWM-style bytes.
+ */
 static void parse_rgb_query(const char *line, uint8_t *r, uint8_t *g, uint8_t *b) {
     const char *q = strchr(line, '?');
     if (!q) {
         return;
     }
+    /* Anonymous struct array: each entry maps a literal key to the uint8_t we should update. */
     const struct {
         const char *key;
         uint8_t *dst;
@@ -69,26 +94,35 @@ static void parse_rgb_query(const char *line, uint8_t *r, uint8_t *g, uint8_t *b
         p += strlen(keys[k].key);
         char *end = NULL;
         unsigned long v = strtoul(p, &end, 10);
+        /* end != p ensures we actually parsed digits; strtoul allows leading whitespace */
         if (end != p && v <= 255UL) {
             *keys[k].dst = (uint8_t)v;
         }
     }
 }
 
+/*
+ * Queue a full HTTP response and close. TCP_WRITE_FLAG_COPY copies data into lwIP’s memory
+ * (our stack buffer is safe to reuse after return).
+ */
 static err_t send_and_close(struct tcp_pcb *tpcb, const char *data, size_t len) {
     err_t e = tcp_write(tpcb, data, len, TCP_WRITE_FLAG_COPY);
     if (e != ERR_OK) {
         tcp_abort(tpcb);
         return e;
     }
-    tcp_output(tpcb);
+    tcp_output(tpcb); /* push buffers to wire promptly */
     tcp_recv(tpcb, NULL);
     err_t ce = tcp_close(tpcb);
     return ce;
 }
 
+/*
+ * lwIP calls this when data arrives on a connection we accepted.
+ * p == NULL means the remote closed; we just return (our pcb may already be closing).
+ */
 static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
-    (void)arg;
+    (void)arg; /* unused parameter — silences compiler warnings in strict builds */
     if (err != ERR_OK) {
         if (p != NULL) {
             pbuf_free(p);
@@ -100,6 +134,11 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
         return ERR_OK;
     }
 
+    /*
+     * pbuf can be a linked list (chained fragments). We flatten the first ~320 bytes into raw[]
+     * so we can NUL-terminate and use string helpers. Real servers handle arbitrary length; this
+     * is enough for GET /color?r=… HTTP/1.1\r\n.
+     */
     char raw[320];
     size_t total = 0;
     for (struct pbuf *pb = p; pb != NULL; pb = pb->next) {
@@ -114,15 +153,16 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
         total += chunk;
     }
     raw[total] = '\0';
-    pbuf_free(p);
+    pbuf_free(p); /* lwIP refcount — must free what recv gave us */
 
     char line[256];
     copy_first_line(raw, total, line, sizeof(line));
 
+    /* Prefix match: first 10 chars must be "GET /color" (so /color?… works; odd paths are still accepted). */
     if (strncmp(line, "GET /color", 10) == 0) {
         uint8_t r = 0, g = 0, b = 0;
-        http_get_color(&r, &g, &b);
-        parse_rgb_query(line, &r, &g, &b);
+        http_get_color(&r, &g, &b);   /* start from current color */
+        parse_rgb_query(line, &r, &g, &b); /* override only params present in URL */
         set_color(r, g, b);
         static const char resp[] =
             "HTTP/1.0 200 OK\r\n"
@@ -131,6 +171,7 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
             "Connection: close\r\n"
             "\r\n"
             "OK";
+        /* sizeof(resp)-1: don’t send the string’s trailing NUL byte as body content */
         return send_and_close(tpcb, resp, sizeof(resp) - 1U);
     }
 
@@ -178,11 +219,16 @@ static err_t http_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t er
     return send_and_close(tpcb, nf, sizeof(nf) - 1U);
 }
 
+/* Optional error callback — lwIP notifies us if the connection RSTs, etc. */
 static void http_err(void *arg, err_t err) {
     (void)arg;
     (void)err;
 }
 
+/*
+ * New inbound connection: register recv/err handlers on the per-client pcb.
+ * listen_pcb keeps accepting; each client gets its own tcp_pcb.
+ */
 static err_t http_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     (void)arg;
     if (err != ERR_OK || newpcb == NULL) {
@@ -203,6 +249,7 @@ void http_server_init(void) {
         cyw43_arch_lwip_end();
         return;
     }
+    /* 0.0.0.0 = listen on all IPv4 addresses assigned to the interface */
     ip_addr_t bind_addr;
     IP4_ADDR(&bind_addr, 0, 0, 0, 0);
     err_t e = tcp_bind(pcb, &bind_addr, HTTP_SERVER_PORT);
@@ -211,6 +258,7 @@ void http_server_init(void) {
         cyw43_arch_lwip_end();
         return;
     }
+    /* tcp_listen consumes pcb and returns a listen PCB (or NULL on failure). */
     listen_pcb = tcp_listen(pcb);
     if (listen_pcb == NULL) {
         tcp_abort(pcb);
