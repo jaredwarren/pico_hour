@@ -1,0 +1,6 @@
+# Keep image/context small; SDK comes from the image, not the copy.
+build/
+build-docker/
+.git/
+pico-sdk/
+**/__pycache__/

@@ -1,0 +1,14 @@
+services:
+  firmware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pi-hour-firmware:latest
+    volumes:
+      # Host repo mounted here; outputs go to build-docker/ on the host
+      - .:/project
+    environment:
+      PICO_SDK_PATH: /opt/pico-sdk
+    # Run the script from the mount — not the copy baked into the image — so you never need to
+    # rebuild the image when docker/build.sh changes, and CMake always uses build-docker/ (not host build/).
+    entrypoint: ["/bin/sh", "/project/docker/build.sh"]

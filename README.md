@@ -4,8 +4,16 @@ Firmware for **Raspberry Pi Pico W** (C, Pico SDK): drives a **WS2812** strip wi
 
 ## Requirements
 
-- [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) (set `PICO_SDK_PATH` or place the SDK next to this project and point CMake at it)
-- Toolchain: **arm-none-eabi-gcc** and **CMake** (e.g. Raspberry Pi OS package `gcc-arm-none-eabi`, or Homebrew `arm-none-eabi-gcc` + `cmake`)
+- [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) (set `PICO_SDK_PATH` or clone into `./pico-sdk`; see Build)
+- **CMake** (`brew install cmake` on macOS)
+- **ARM GCC for Cortex-M** — Apple’s `clang` / Xcode **cannot** build Pico firmware. You need the cross-compiler **`arm-none-eabi-gcc`**:
+  - **macOS (Homebrew):** `brew install arm-none-eabi-gcc`  
+    Then confirm: `arm-none-eabi-gcc --version`  
+    If CMake still says `Compiler 'arm-none-eabi-gcc' not found`, ensure Homebrew’s `bin` is on your `PATH` (e.g. `/opt/homebrew/bin`), or pass `-DPICO_TOOLCHAIN_PATH=/opt/homebrew/opt/arm-none-eabi-gcc/bin` to CMake.
+  - **Linux:** package `gcc-arm-none-eabi` (Debian/Ubuntu) or your distro equivalent.
+- **GNU Make** (macOS: install Xcode Command Line Tools: `xcode-select --install`) — needed for `cmake -G "Unix Makefiles"`.
+
+The follow-on errors (`CMAKE_C_COMPILER not set`, `CMAKE_MAKE_PROGRAM is not set`) usually disappear once `arm-none-eabi-gcc` is installed and CMake can finish the toolchain step.
 
 ## Configuration
 
@@ -31,6 +39,20 @@ Avoid GPIOs reserved for the CYW43 wireless interface on Pico W; the defaults ab
 
 ## Build
 
+**CMake alone is not enough** — you also need the [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) source tree. If CMake says `SDK location was not specified`, you have not pointed it at that tree yet.
+
+**Option A — SDK next to the project (works with `make` without `export`):**
+
+```bash
+cd pi_hour
+git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git pico-sdk
+cd pico-sdk && git submodule update --init && cd ..
+make info    # should show a non-empty PICO_SDK_PATH
+make build
+```
+
+**Option B — SDK anywhere + environment variable:**
+
 ```bash
 export PICO_SDK_PATH=/path/to/pico-sdk
 cd pi_hour
@@ -46,6 +68,30 @@ cmake -DPICO_BOARD=pico_w -DWIFI_SSID="myssid" -DWIFI_PASSWORD="secret" ..
 ```
 
 Flash `build/pi_hour.uf2` in BOOTSEL mode (drag onto the USB drive).
+
+### Build with Docker
+
+**When it helps:** Same toolchain and SDK for everyone, no local `arm-none-eabi-gcc` or `./pico-sdk` on the host. Good for CI and for machines where you do not want a full embedded setup.
+
+**Caveats:** Docker writes **`build-docker/`** (not `build/`) so its CMake cache never conflicts with a native build on the same machine (CMake stores absolute paths; `/project/...` inside the container ≠ `/Users/...` on the host). Copy **`build-docker/pi_hour.uf2`** to flash. **USB flashing** from inside the container is usually awkward; use the file on the host as usual. On Linux, `build-docker/` may be **root-owned** unless you use `docker compose run --user "$(id -u):$(id -g)"` (may require a matching user in the image) or `sudo chown` afterward.
+
+```bash
+cd pi_hour
+docker compose build   # once: toolchain + SDK in the image
+docker compose run --rm firmware
+# or: make docker-build
+```
+
+`docker-compose.yml` runs **`docker/build.sh` from your repo mount**, not a copy inside the image, so you do not need to rebuild the image after editing that script. If you ever see CMake complaining about `/project/build` vs `/Users/.../build`, ensure `docker/build.sh` uses **`build-docker/`** and run again (you can delete `build-docker/` to force a clean configure).
+
+The image pins **`PICO_SDK_REF`** (see `Dockerfile`); change the `ARG` and rebuild the image to move SDK versions.
+
+Interactive shell with the same toolchain:
+
+```bash
+make docker-shell
+# or: docker compose run --rm -it --entrypoint bash firmware
+```
 
 ## HTTP API
 
