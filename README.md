@@ -46,6 +46,66 @@ Other settings in [`include/config.h`](include/config.h):
 
 Avoid GPIOs reserved for the CYW43 wireless interface on Pico W; the defaults above are user GPIOs.
 
+Default pin numbers match [`include/config.h`](include/config.h) (`WS2812_PIN`, `I2C_SDA_PIN`, `I2C_SCL_PIN`). Change them there if you rewire.
+
+```mermaid
+flowchart TB
+  subgraph pico [Pico W]
+    direction TB
+    gp2["GPIO2 — strip data"]
+    gp4["GPIO4 — I2C0 SDA"]
+    gp5["GPIO5 — I2C0 SCL"]
+    pv33["3V3 out"]
+    pgnd["GND"]
+  end
+
+  subgraph shifter [Level shifter — recommended for 5V WS2812]
+    direction TB
+    lv["Low-voltage side — data in"]
+    hv["High-voltage side — data out"]
+    sgnd["GND — tie to Pico and strip GND"]
+    lv --> hv
+  end
+
+  subgraph psu [5V supply for LEDs]
+    direction TB
+    psvp["V+ output"]
+    psgn["GND output"]
+  end
+
+  subgraph strip [WS2812 strip]
+    direction TB
+    sdin["DIN / Data"]
+    sv5["V+ pad"]
+    sg["GND pad"]
+  end
+
+  subgraph mpu [MPU-6050 breakout]
+    direction TB
+    msda["SDA"]
+    mscl["SCL"]
+    mvcc["VCC — 3.3V only"]
+    mgnd["GND"]
+  end
+
+  gp2 -->|"3.3V logic"| lv
+  hv -->|"5V logic"| sdin
+  pgnd --- sgnd
+  psvp --- sv5
+  psgn --- sg
+  psgn --- pgnd
+  pgnd --- mgnd
+  pv33 --> mvcc
+  gp4 --- msda
+  gp5 --- mscl
+```
+
+**Notes:**
+
+- **5 V strip:** Power the strip from a **5 V supply** sized for your LED count; connect supply **GND** to Pico **GND** (common ground). Run **GPIO2 → shifter (LV) → shifter (HV) → strip DIN**.
+- **3.3 V strip / short 5 V strip (lab only):** You can try **GPIO2 → DIN** directly; many 5 V WS2812s are unreliable at 3.3 V data — prefer a 74AHCT125-class shifter for 5 V strips.
+- **MPU-6050:** Use **3.3 V** on VCC (not 5 V unless your breakout regulates).
+
 ## Build
 
 **CMake alone is not enough** — you also need the [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) source tree. If CMake says `SDK location was not specified`, you have not pointed it at that tree yet.
