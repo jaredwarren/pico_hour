@@ -17,11 +17,20 @@ The follow-on errors (`CMAKE_C_COMPILER not set`, `CMAKE_MAKE_PROGRAM is not set
 
 ## Configuration
 
-Edit [`include/config.h`](include/config.h):
+Hardware and tuning live in [`include/config.h`](include/config.h). For **Wi-Fi**, use one of the options below instead of committing passwords in `config.h`.
+
+### Wi-Fi credentials (not in git)
+
+1. **Local header (recommended):** copy [`include/config.local.h.example`](include/config.local.h.example) to `include/config.local.h`, put your SSID and password there, and rebuild. [`include/config.local.h`](include/config.local.h) is in [`.gitignore`](.gitignore), so it is not committed. Works with **Docker** too (the file is on your machine inside the mounted repo).
+
+2. **CMake / Make:** `make build WIFI_SSID=MyNet WIFI_PASSWORD='secret'` or `cmake .. -DWIFI_SSID=... -DWIFI_PASSWORD=...`. Values are stored under `build/` or `build-docker/` (also ignored).
+
+3. **Defaults in `config.h`:** only for quick tests — easy to commit by accident.
+
+Other settings in [`include/config.h`](include/config.h):
 
 | Setting | Meaning |
 |--------|---------|
-| `WIFI_SSID` / `WIFI_PASSWORD` | Your network (or pass `-DWIFI_SSID=...` at configure time) |
 | `WS2812_PIN` | Data line to the strip (default `2`) |
 | `NUM_LEDS` | Total LEDs on the strip |
 | `WINDOW_SIZE` | How many LEDs are on at once |

@@ -1,0 +1,16 @@
+/*
+ * Wi-Fi and other machine-local settings (optional).
+ *
+ * Copy this file to:  include/config.local.h
+ * That path is listed in .gitignore — it will not be committed.
+ *
+ * Then rebuild firmware. arm-none-eabi-gcc supports __has_include (used from config.h).
+ */
+
+#ifndef PI_HOUR_CONFIG_LOCAL_H
+#define PI_HOUR_CONFIG_LOCAL_H
+
+#define WIFI_SSID "your-ssid-here"
+#define WIFI_PASSWORD "your-password-here"
+
+#endif

@@ -1,7 +1,23 @@
 #ifndef PI_HOUR_CONFIG_H
 #define PI_HOUR_CONFIG_H
 
-// WiFi — set before build or edit here
+/*
+ * Wi-Fi credentials — pick one approach (do not commit secrets):
+ *
+ * 1) Recommended: copy include/config.local.h.example → include/config.local.h
+ *    (config.local.h is gitignored) and set WIFI_SSID / WIFI_PASSWORD there.
+ *
+ * 2) CMake / Make: -DWIFI_SSID="..." -DWIFI_PASSWORD="..."
+ *    e.g. make build WIFI_SSID=MyNet WIFI_PASSWORD=secret
+ *
+ * 3) Edit the defaults below only for throwaway / lab builds (easy to commit by mistake).
+ */
+#if defined(__has_include)
+#if __has_include("config.local.h")
+#include "config.local.h"
+#endif
+#endif
+
 #ifndef WIFI_SSID
 #define WIFI_SSID "your-ssid"
 #endif
